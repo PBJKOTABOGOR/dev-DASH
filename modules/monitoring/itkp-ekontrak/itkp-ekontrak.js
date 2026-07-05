@@ -1,11 +1,14 @@
 (function () {
   'use strict';
 
-  const EKONTRAK_SHEET_CONFIG = {
-    spreadsheetId: '1tRYoFQ2obJLoQfIBmZQ_qIw72ZCMV9fKIpBA3DlsIxE',
-    rawSheetName: 'RAW_EKONTRAK',
-    scoreSheetName: 'SCORE_ITKP_EKONTRAK'
-  };
+  // AMAN TAHAP 1:
+  // Spreadsheet ID dan nama sheet sudah DIPINDAH ke Apps Script backend.
+  // Frontend hanya memanggil endpoint backend, jadi link spreadsheet tidak muncul di DevTools.
+  //
+  // Isi dengan URL Web App Apps Script setelah backend dipasang.
+  // Contoh:
+  // const EKONTRAK_API_URL = 'https://script.google.com/macros/s/AKfycbxxxx/exec';
+  const EKONTRAK_API_URL = 'https://script.google.com/macros/s/AKfycbzH-3lqSEdFlnYkP5myxWL1VtMyf3C5TpAokucb2xJbAEkLJpr1cDEnV5hRQUxC7Iw-qg/exec';
 
   const EKONTRAK_MIN_LOADING_MS = 700;
   const EKONTRAK_PAGE_SIZE = 20;
@@ -210,32 +213,22 @@
 
       try {
         showError('');
-        setLoading('Menghubungkan ke Google Sheet...', useOverlay);
+        setLoading('Menghubungkan ke backend eKontrak...', useOverlay);
 
-        const [rawResult, scoreResult] = await Promise.allSettled([
-          fetchCsv(buildCsvUrlBySheetName(EKONTRAK_SHEET_CONFIG.rawSheetName)),
-          fetchCsv(buildCsvUrlBySheetName(EKONTRAK_SHEET_CONFIG.scoreSheetName))
-        ]);
+        if (!EKONTRAK_API_URL || EKONTRAK_API_URL.includes('ISI_URL_WEB_APP')) {
+          throw new Error('URL backend eKontrak belum diisi di itkp-ekontrak.js. Pasang Apps Script backend dulu, lalu isi EKONTRAK_API_URL.');
+        }
+
+        const payload = await fetchEkontrakBackendData();
 
         if (state.destroyed) return;
 
-        let rawRows = [];
-        let scoreRows = [];
-        const errors = [];
-
-        if (rawResult.status === 'fulfilled') {
-          rawRows = csvToObjects(rawResult.value);
-        } else {
-          errors.push('RAW_EKONTRAK gagal dimuat');
-          console.error(rawResult.reason);
+        if (!payload || payload.ok === false) {
+          throw new Error(payload && payload.message ? payload.message : 'Backend tidak mengirim data valid.');
         }
 
-        if (scoreResult.status === 'fulfilled') {
-          scoreRows = csvToObjects(scoreResult.value);
-        } else {
-          errors.push('SCORE_ITKP_EKONTRAK gagal dimuat');
-          console.error(scoreResult.reason);
-        }
+        const rawRows = normalizeObjectsHeaders(payload.rawRows || []);
+        const scoreRows = normalizeObjectsHeaders(payload.scoreRows || []);
 
         state.rawRows = normalizeRawRows(rawRows);
         state.scoreRows = normalizeScoreRows(scoreRows);
@@ -244,13 +237,9 @@
 
         buildFilterOptions();
         applyFilters();
-
-        if (errors.length) {
-          showError(errors.join(' + ') + '. Sebagian data berhasil dimuat, sebagian gagal.');
-        }
       } catch (error) {
         console.error(error);
-        showError(`Data eKontrak gagal dimuat. Detail: ${error.message}. Pastikan sheet bisa diakses publik.`);
+        showError(`Data eKontrak gagal dimuat. Detail: ${error.message}.`);
       } finally {
         const elapsed = Date.now() - startedAt;
 
@@ -578,50 +567,70 @@
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  function buildCsvUrlBySheetName(sheetName) {
-    return `https://docs.google.com/spreadsheets/d/${EKONTRAK_SHEET_CONFIG.spreadsheetId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`;
-  }
+  function buildBackendUrl(extraParams = {}) {
+    const url = new URL(EKONTRAK_API_URL);
+    url.searchParams.set('module', 'ekontrak');
+    url.searchParams.set('action', 'data');
 
-  async function fetchCsv(url) {
-    const response = await fetch(url, {
-      method: 'GET',
-      cache: 'no-store'
+    Object.keys(extraParams).forEach(key => {
+      url.searchParams.set(key, extraParams[key]);
     });
 
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status} saat mengambil ${url}`);
-    }
-
-    const text = await response.text();
-
-    if (!text || !text.trim()) {
-      throw new Error(`CSV kosong dari ${url}`);
-    }
-
-    if (/<!doctype html>|<html/i.test(text)) {
-      throw new Error(`Response bukan CSV. Kemungkinan sheet masih belum public: ${url}`);
-    }
-
-    return text;
+    return url.toString();
   }
 
-  function csvToObjects(csvText) {
-    const rows = parseCsv(csvText);
-    if (!rows.length) return [];
+  function fetchEkontrakBackendData() {
+    // Pakai JSONP supaya aman dari kendala CORS Apps Script saat dipanggil dari GitHub Pages.
+    return jsonpRequest(buildBackendUrl(), 30000);
+  }
 
-    const headers = rows[0].map(h => normalizeHeader(h));
+  function jsonpRequest(url, timeoutMs = 30000) {
+    return new Promise((resolve, reject) => {
+      const callbackName = `__sippbjEkontrakCallback_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      const script = document.createElement('script');
+      const timeout = window.setTimeout(() => {
+        cleanup();
+        reject(new Error('Timeout mengambil data dari backend eKontrak.'));
+      }, timeoutMs);
 
-    return rows.slice(1)
-      .filter(row => row.some(cell => String(cell || '').trim() !== ''))
-      .map(row => {
-        const obj = {};
+      function cleanup() {
+        window.clearTimeout(timeout);
+        delete window[callbackName];
+        if (script.parentNode) {
+          script.parentNode.removeChild(script);
+        }
+      }
 
-        headers.forEach((header, index) => {
-          obj[header] = row[index] != null ? String(row[index]).trim() : '';
-        });
+      window[callbackName] = (payload) => {
+        cleanup();
+        resolve(payload);
+      };
 
-        return obj;
+      const finalUrl = new URL(url);
+      finalUrl.searchParams.set('callback', callbackName);
+      finalUrl.searchParams.set('_', Date.now());
+
+      script.src = finalUrl.toString();
+      script.async = true;
+      script.onerror = () => {
+        cleanup();
+        reject(new Error('Gagal memanggil backend eKontrak. Cek URL Web App Apps Script.'));
+      };
+
+      document.head.appendChild(script);
+    });
+  }
+
+  function normalizeObjectsHeaders(rows) {
+    if (!Array.isArray(rows)) return [];
+
+    return rows.map(source => {
+      const obj = {};
+      Object.keys(source || {}).forEach(key => {
+        obj[normalizeHeader(key)] = source[key] == null ? '' : String(source[key]).trim();
       });
+      return obj;
+    });
   }
 
   function parseCsv(text) {
