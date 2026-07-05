@@ -1,13 +1,7 @@
 (function () {
   'use strict';
 
-  const CONFIG = {
-    SHEET_ID: '1ccDgtXNATxSYMZuDgd3polvRiTFNiFnjIGMP7b9qmrU',
-    SHEETS: {
-      perencanaan: 'D_PERENCANAAN',
-      realisasi: 'D_REALISASI_MAP'
-    }
-  };
+  const PERENCANAAN_API_URL = 'https://script.google.com/macros/s/AKfycbyE_JmuABvXD17pJvJEa_a-VB1hK3d--I5Enj6WKQYrU4P9aDonBsbQiH8qzu96mwrg/exec';
 
   window.__moduleInit = function ({ container }) {
     const root = container || document;
@@ -90,55 +84,50 @@
       });
     }
 
-    function csvUrlBySheetName(sheetId, sheetName) {
-      const cacheBust = Date.now();
-      return `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}&cache_bust=${cacheBust}`;
+    function buildBackendUrl() {
+      const url = new URL(PERENCANAAN_API_URL);
+      url.searchParams.set('module', 'perencanaan');
+      url.searchParams.set('action', 'data');
+      return url.toString();
     }
 
-    function fetchSheet(sheetName) {
+    function fetchPerencanaanBackendData() {
+      return jsonpRequest(buildBackendUrl(), 30000);
+    }
+
+    function jsonpRequest(url, timeoutMs = 30000) {
       return new Promise((resolve, reject) => {
-        if (!window.Papa) {
-          reject(new Error('Library PapaParse belum tersedia.'));
-          return;
+        const callbackName = `__sippbjPerencanaanCallback_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+        const script = document.createElement('script');
+        const timeout = window.setTimeout(() => {
+          cleanup();
+          reject(new Error('Timeout mengambil data dari backend Perencanaan.'));
+        }, timeoutMs);
+
+        function cleanup() {
+          window.clearTimeout(timeout);
+          delete window[callbackName];
+          if (script.parentNode) script.parentNode.removeChild(script);
         }
 
-        Papa.parse(csvUrlBySheetName(CONFIG.SHEET_ID, sheetName), {
-          download: true,
-          header: true,
-          skipEmptyLines: true,
-          complete: function (results) {
-            resolve(results.data || []);
-          },
-          error: function (err) {
-            reject(err);
-          }
-        });
+        window[callbackName] = (payload) => {
+          cleanup();
+          resolve(payload);
+        };
+
+        const finalUrl = new URL(url);
+        finalUrl.searchParams.set('callback', callbackName);
+        finalUrl.searchParams.set('_', Date.now());
+
+        script.src = finalUrl.toString();
+        script.async = true;
+        script.onerror = () => {
+          cleanup();
+          reject(new Error('Gagal memanggil backend Perencanaan.'));
+        };
+
+        document.head.appendChild(script);
       });
-    }
-
-
-    async function fetchRealisasiSheet() {
-      /*
-        Prioritas baca D_REALISASI_MAP.
-        Sheet ini adalah hasil normalisasi:
-        - 1 Kode RUP = 1 baris realisasi.
-        - Khusus Pengadaan Langsung gabungan, 1 paket realisasi akan dipecah ke semua Kode RUP di History Kode RUP.
-
-        Jika D_REALISASI_MAP belum dibuat, sistem fallback ke D_REALISASI.
-      */
-      try {
-        const mapRows = await fetchSheet(CONFIG.SHEETS.realisasiMap);
-        const normalized = normalizeRows(mapRows);
-        const validRows = normalized.filter(r => String(r.kode_rup || '').trim());
-
-        if (validRows.length > 0) {
-          return mapRows;
-        }
-      } catch (err) {
-        console.warn('D_REALISASI_MAP belum tersedia, fallback ke D_REALISASI.', err);
-      }
-
-      return fetchSheet(CONFIG.SHEETS.realisasi);
     }
 
 
@@ -1302,13 +1291,21 @@
 
     async function loadMonitoringData() {
       try {
-        showMonitoringLoader('Mengambil data dari Google Sheet...');
-        setText('monitoringStatus', 'Memuat data dari Google Sheet...');
+        showMonitoringLoader('Mengambil data dari backend Perencanaan...');
+        setText('monitoringStatus', 'Memuat data dari backend Perencanaan...');
 
-        const [perencanaanRows, realisasiRows] = await Promise.all([
-          fetchSheet(CONFIG.SHEETS.perencanaan),
-          fetchRealisasiSheet()
-        ]);
+        if (!PERENCANAAN_API_URL || PERENCANAAN_API_URL.includes('ISI_URL_WEB_APP')) {
+          throw new Error('URL backend Perencanaan belum diisi.');
+        }
+
+        const payload = await fetchPerencanaanBackendData();
+
+        if (!payload || payload.ok === false) {
+          throw new Error(payload && payload.message ? payload.message : 'Backend tidak mengirim data valid.');
+        }
+
+        const perencanaanRows = payload.perencanaanRows || [];
+        const realisasiRows = payload.realisasiRows || [];
 
         if (moduleDestroyed) return;
 
@@ -1345,21 +1342,11 @@
 
     bindMonitoringEvents();
 
-    ensurePapaLoaded()
-      .then(() => {
-        if (!moduleDestroyed) {
-          loadMonitoringData();
+    loadMonitoringData();
 
-    // Fallback agar loader tidak nyangkut kalau koneksi/CDN Google Sheet lambat.
     setTimeout(() => {
       hideMonitoringLoader();
     }, 12000);
-        }
-      })
-      .catch((err) => {
-        console.error(err);
-        setText('monitoringStatus', 'Gagal memuat library PapaParse: ' + (err.message || String(err)));
-      });
 
     return function destroy() {
       moduleDestroyed = true;
