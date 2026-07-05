@@ -1,13 +1,6 @@
 (function () {
   'use strict';
 
-  // AMAN TAHAP 1:
-  // Spreadsheet ID dan nama sheet sudah DIPINDAH ke Apps Script backend.
-  // Frontend hanya memanggil endpoint backend, jadi link spreadsheet tidak muncul di DevTools.
-  //
-  // Isi dengan URL Web App Apps Script setelah backend dipasang.
-  // Contoh:
-  // const EKONTRAK_API_URL = 'https://script.google.com/macros/s/AKfycbxxxx/exec';
   const EKONTRAK_API_URL = 'https://script.google.com/macros/s/AKfycbzH-3lqSEdFlnYkP5myxWL1VtMyf3C5TpAokucb2xJbAEkLJpr1cDEnV5hRQUxC7Iw-qg/exec';
 
   const EKONTRAK_MIN_LOADING_MS = 700;
