@@ -1,5 +1,5 @@
 (function () {
-
+ 
   const EKATALOG_API_URL = 'https://script.google.com/macros/s/AKfycbyR56-Pxwx9lC65pahyukmx93pzKIdB_cq2LYXLYvZGEshlSb2ZJEByIuAI1ofLiKEO/exec';
 
   const EKATALOG_MIN_LOADING_MS = 700;
