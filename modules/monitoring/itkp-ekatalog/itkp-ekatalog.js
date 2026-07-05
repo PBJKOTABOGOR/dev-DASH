@@ -6,7 +6,7 @@
   // Isi dengan URL Web App Apps Script setelah backend dipasang.
   // Contoh:
   // const EKATALOG_API_URL = 'https://script.google.com/macros/s/AKfycbxxxx/exec';
-  const EKATALOG_API_URL = 'https://script.google.com/macros/s/AKfycbyR56-Pxwx9lC65pahyukmx93pzKIdB_cq2LYXLYvZGEshlSb2ZJEByIuAI1ofLiKEO/exec';
+  const EKATALOG_API_URL = 'ass';
 
   const EKATALOG_MIN_LOADING_MS = 700;
   const EKATALOG_PAGE_SIZE = 20;
