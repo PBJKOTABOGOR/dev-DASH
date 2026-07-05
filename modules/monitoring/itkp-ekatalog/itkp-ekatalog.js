@@ -69,7 +69,7 @@
       modalList: root.querySelector('#modalList'),
       btnCloseModal: root.querySelector('#btnCloseModal')
     };
-
+ 
     const listeners = [];
 
     const on = (target, event, handler) => {
