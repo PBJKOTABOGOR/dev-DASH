@@ -1,5 +1,4 @@
 (function () {
-'use strict';
   const EKATALOG_API_URL = 'https://script.google.com/macros/s/AKfycbyR56-Pxwx9lC65pahyukmx93pzKIdB_cq2LYXLYvZGEshlSb2ZJEByIuAI1ofLiKEO/exec';
 
   const EKATALOG_MIN_LOADING_MS = 700;
@@ -63,7 +62,7 @@
       modalList: root.querySelector('#modalList'),
       btnCloseModal: root.querySelector('#btnCloseModal')
     };
- 
+
     const listeners = [];
 
     const on = (target, event, handler) => {
@@ -176,7 +175,7 @@
         setLoading('Menghubungkan ke backend eKatalog...', useOverlay);
 
         if (!EKATALOG_API_URL || EKATALOG_API_URL.includes('ISI_URL_WEB_APP')) {
-          throw new Error('URL backend eKatalog belum diisi di itkp-ekatalog.js. Pasang Apps Script backend dulu, lalu isi EKATALOG_API_URL.');
+          throw new Error('URL backend eKatalog belum diisi.');
         }
 
         const payload = await fetchEkatalogBackendData();
@@ -530,20 +529,14 @@
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  function buildBackendUrl(extraParams = {}) {
+  function buildBackendUrl() {
     const url = new URL(EKATALOG_API_URL);
     url.searchParams.set('module', 'ekatalog');
     url.searchParams.set('action', 'data');
-
-    Object.keys(extraParams).forEach(key => {
-      url.searchParams.set(key, extraParams[key]);
-    });
-
     return url.toString();
   }
 
   function fetchEkatalogBackendData() {
-    // Pakai JSONP supaya aman dari kendala CORS Apps Script saat dipanggil dari GitHub Pages.
     return jsonpRequest(buildBackendUrl(), 30000);
   }
 
@@ -559,9 +552,7 @@
       function cleanup() {
         window.clearTimeout(timeout);
         delete window[callbackName];
-        if (script.parentNode) {
-          script.parentNode.removeChild(script);
-        }
+        if (script.parentNode) script.parentNode.removeChild(script);
       }
 
       window[callbackName] = (payload) => {
@@ -577,7 +568,7 @@
       script.async = true;
       script.onerror = () => {
         cleanup();
-        reject(new Error('Gagal memanggil backend eKatalog. Cek URL Web App Apps Script.'));
+        reject(new Error('Gagal memanggil backend eKatalog.'));
       };
 
       document.head.appendChild(script);
