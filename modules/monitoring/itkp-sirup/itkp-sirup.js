@@ -194,6 +194,80 @@
     });
   }
 
+  function setLoading(message, useOverlay = false) {
+    safeSetText(EL.loadingText, message);
+    safeSetText(EL.globalLoadingText, message);
+
+    if (EL.loadingBox) EL.loadingBox.classList.add('show');
+    if (useOverlay && EL.globalLoadingOverlay) EL.globalLoadingOverlay.classList.add('show');
+
+    if (EL.btnRefresh) EL.btnRefresh.disabled = true;
+    if (EL.btnExportRekap) EL.btnExportRekap.disabled = true;
+    if (EL.btnExportDetail) EL.btnExportDetail.disabled = true;
+    if (EL.btnExportCurrentDetail) EL.btnExportCurrentDetail.disabled = true;
+  }
+
+  function clearLoading() {
+    if (EL.loadingBox) EL.loadingBox.classList.remove('show');
+    if (EL.globalLoadingOverlay) EL.globalLoadingOverlay.classList.remove('show');
+
+    if (EL.btnRefresh) EL.btnRefresh.disabled = false;
+    if (EL.btnExportRekap) EL.btnExportRekap.disabled = false;
+    if (EL.btnExportDetail) EL.btnExportDetail.disabled = false;
+    if (EL.btnExportCurrentDetail) EL.btnExportCurrentDetail.disabled = false;
+  }
+
+  async function fetchCsv(url, retries = 2) {
+    let lastError;
+
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const response = await fetch(url, { method: 'GET', cache: 'no-store' });
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status} saat mengambil ${url}`);
+        }
+
+        const text = await response.text();
+
+        if (!text || !text.trim()) {
+          throw new Error(`CSV kosong dari ${url}`);
+        }
+
+        if (/<!doctype html>|<html/i.test(text)) {
+          throw new Error(`Response bukan CSV, kemungkinan akses sheet masih tertutup: ${url}`);
+        }
+
+        return text;
+      } catch (error) {
+        lastError = error;
+        if (attempt < retries) {
+          await wait(500 + (attempt * 700));
+        }
+      }
+    }
+
+    throw lastError;
+  }
+
+  function csvToObjects(csvText) {
+    const rows = parseCsv(csvText);
+    if (!rows.length) return [];
+
+    const headers = rows[0].map(h => normalizeHeader(h));
+    const dataRows = rows.slice(1);
+
+    return dataRows
+      .filter(row => row.some(cell => String(cell || '').trim() !== ''))
+      .map(row => {
+        const obj = {};
+        headers.forEach((header, index) => {
+          obj[header] = row[index] != null ? String(row[index]).trim() : '';
+        });
+        return obj;
+      });
+  }
+
   function parseCsv(text) {
     const rows = [];
     let row = [];
