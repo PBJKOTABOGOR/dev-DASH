@@ -1,11 +1,7 @@
 (function () {
   'use strict';
 
-  const NONTENDER_SHEET_CONFIG = {
-    spreadsheetId: '1ToEDE9uugH2x44iOJCiTRtHH6BkcFZj4iAwYyI-rC5I',
-    rawSheetName: 'M_Pencatatan',
-    scoreSheetName: 'SCORE_ITKP_NONT'
-  };
+  const NONTENDER_API_URL = 'https://script.google.com/macros/s/AKfycbxAzLLV14ByXtFcMJerH3RPDhlDvIlZJK0mKYv3L9L5xZhtFetUvXuMLvIZ45ETdLUvrQ/exec';
 
   const NONTENDER_MIN_LOADING_MS = 700;
   const NONTENDER_PAGE_SIZE = 20;
@@ -226,32 +222,22 @@
 
       try {
         showError('');
-        setLoading('Menghubungkan ke Google Sheet...', useOverlay);
+        setLoading('Menghubungkan ke backend Non Tender...', useOverlay);
 
-        const [rawResult, scoreResult] = await Promise.allSettled([
-          fetchCsv(buildCsvUrlBySheetName(NONTENDER_SHEET_CONFIG.rawSheetName)),
-          fetchCsv(buildCsvUrlBySheetName(NONTENDER_SHEET_CONFIG.scoreSheetName))
-        ]);
+        if (!NONTENDER_API_URL || NONTENDER_API_URL.includes('ISI_URL_WEB_APP')) {
+          throw new Error('URL backend Non Tender belum diisi.');
+        }
+
+        const payload = await fetchNontenderBackendData();
 
         if (state.destroyed) return;
 
-        let rawRows = [];
-        let scoreRows = [];
-        const errors = [];
-
-        if (rawResult.status === 'fulfilled') {
-          rawRows = csvToObjects(rawResult.value);
-        } else {
-          errors.push('M_Pencatatan gagal dimuat');
-          console.error(rawResult.reason);
+        if (!payload || payload.ok === false) {
+          throw new Error(payload && payload.message ? payload.message : 'Backend tidak mengirim data valid.');
         }
 
-        if (scoreResult.status === 'fulfilled') {
-          scoreRows = csvToObjects(scoreResult.value);
-        } else {
-          errors.push('SCORE_ITKP_NONT gagal dimuat');
-          console.error(scoreResult.reason);
-        }
+        const rawRows = normalizeObjectsHeaders(payload.rawRows || []);
+        const scoreRows = normalizeObjectsHeaders(payload.scoreRows || []);
 
         state.rawRows = normalizeRawRows(rawRows);
         state.scoreRows = normalizeScoreRows(scoreRows);
@@ -260,13 +246,9 @@
 
         buildFilterOptions();
         applyFilters();
-
-        if (errors.length) {
-          showError(errors.join(' + ') + '. Sebagian data berhasil dimuat, sebagian gagal.');
-        }
       } catch (error) {
         console.error(error);
-        showError(`Data Non Tender gagal dimuat. Detail: ${error.message}. Pastikan sheet bisa diakses publik.`);
+        showError(`Data Non Tender gagal dimuat. Detail: ${error.message}.`);
       } finally {
         const elapsed = Date.now() - startedAt;
 
@@ -581,54 +563,64 @@
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  function buildCsvUrlBySheetName(sheetName) {
-    return `https://docs.google.com/spreadsheets/d/${NONTENDER_SHEET_CONFIG.spreadsheetId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`;
+  function buildBackendUrl() {
+    const url = new URL(NONTENDER_API_URL);
+    url.searchParams.set('module', 'nontender');
+    url.searchParams.set('action', 'data');
+    return url.toString();
   }
 
-  async function fetchCsv(url) {
-    const response = await fetch(url, {
-      method: 'GET',
-      cache: 'no-store'
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status} saat mengambil ${url}`);
-    }
-
-    const text = await response.text();
-
-    if (!text || !text.trim()) {
-      throw new Error(`CSV kosong dari ${url}`);
-    }
-
-    if (/<!doctype html>|<html/i.test(text)) {
-      throw new Error(`Response bukan CSV. Kemungkinan sheet masih belum public: ${url}`);
-    }
-
-    return text;
+  function fetchNontenderBackendData() {
+    return jsonpRequest(buildBackendUrl(), 30000);
   }
 
-  function csvToObjects(csvText) {
-    const rows = parseCsv(csvText);
-    if (!rows.length) return [];
+  function jsonpRequest(url, timeoutMs = 30000) {
+    return new Promise((resolve, reject) => {
+      const callbackName = `__sippbjNontenderCallback_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      const script = document.createElement('script');
+      const timeout = window.setTimeout(() => {
+        cleanup();
+        reject(new Error('Timeout mengambil data dari backend Non Tender.'));
+      }, timeoutMs);
 
-    const headers = rows[0].map((h, index) => {
-      const normalized = normalizeHeader(h);
-      return normalized || `_skip_empty_header_${index}`;
+      function cleanup() {
+        window.clearTimeout(timeout);
+        delete window[callbackName];
+        if (script.parentNode) script.parentNode.removeChild(script);
+      }
+
+      window[callbackName] = (payload) => {
+        cleanup();
+        resolve(payload);
+      };
+
+      const finalUrl = new URL(url);
+      finalUrl.searchParams.set('callback', callbackName);
+      finalUrl.searchParams.set('_', Date.now());
+
+      script.src = finalUrl.toString();
+      script.async = true;
+      script.onerror = () => {
+        cleanup();
+        reject(new Error('Gagal memanggil backend Non Tender.'));
+      };
+
+      document.head.appendChild(script);
     });
+  }
 
-    return rows.slice(1)
-      .filter(row => row.some(cell => String(cell || '').trim() !== ''))
-      .map(row => {
-        const obj = {};
+  function normalizeObjectsHeaders(rows) {
+    if (!Array.isArray(rows)) return [];
 
-        headers.forEach((header, index) => {
-          if (header.startsWith('_skip_empty_header_')) return;
-          obj[header] = row[index] != null ? String(row[index]).trim() : '';
-        });
-
-        return obj;
+    return rows.map(source => {
+      const obj = {};
+      Object.keys(source || {}).forEach(key => {
+        const normalized = normalizeHeader(key);
+        if (!normalized) return;
+        obj[normalized] = source[key] == null ? '' : String(source[key]).trim();
       });
+      return obj;
+    });
   }
 
   function parseCsv(text) {
