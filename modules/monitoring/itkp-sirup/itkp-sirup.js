@@ -1,11 +1,7 @@
 (function () {
   'use strict';
 
-  const SHEET_CONFIG = {
-    spreadsheetId: '1tRYoFQ2obJLoQfIBmZQ_qIw72ZCMV9fKIpBA3DlsIxE',
-    rawGid: '0',
-    scoreGid: '468989223'
-  };
+  const SIRUP_API_URL = 'https://script.google.com/macros/s/AKfycbyE_JmuABvXD17pJvJEa_a-VB1hK3d--I5Enj6WKQYrU4P9aDonBsbQiH8qzu96mwrg/exec';
 
   const MIN_LOADING_MS = 700;
   const PAGE_SIZE_REKAP = 20;
@@ -138,82 +134,64 @@
     }
   }
 
-  function buildCsvUrl(gid) {
-    return `https://docs.google.com/spreadsheets/d/${SHEET_CONFIG.spreadsheetId}/export?format=csv&gid=${gid}`;
+  function buildBackendUrl() {
+    const url = new URL(SIRUP_API_URL);
+    url.searchParams.set('module', 'sirup');
+    url.searchParams.set('action', 'data');
+    return url.toString();
   }
 
-  function setLoading(message, useOverlay = false) {
-    safeSetText(EL.loadingText, message);
-    safeSetText(EL.globalLoadingText, message);
-
-    if (EL.loadingBox) EL.loadingBox.classList.add('show');
-    if (useOverlay && EL.globalLoadingOverlay) EL.globalLoadingOverlay.classList.add('show');
-
-    if (EL.btnRefresh) EL.btnRefresh.disabled = true;
-    if (EL.btnExportRekap) EL.btnExportRekap.disabled = true;
-    if (EL.btnExportDetail) EL.btnExportDetail.disabled = true;
-    if (EL.btnExportCurrentDetail) EL.btnExportCurrentDetail.disabled = true;
+  function fetchSirupBackendData() {
+    return jsonpRequest(buildBackendUrl(), 30000);
   }
 
-  function clearLoading() {
-    if (EL.loadingBox) EL.loadingBox.classList.remove('show');
-    if (EL.globalLoadingOverlay) EL.globalLoadingOverlay.classList.remove('show');
+  function jsonpRequest(url, timeoutMs = 30000) {
+    return new Promise((resolve, reject) => {
+      const callbackName = `__sippbjSirupCallback_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      const script = document.createElement('script');
+      const timeout = window.setTimeout(() => {
+        cleanup();
+        reject(new Error('Timeout mengambil data dari backend SIRUP.'));
+      }, timeoutMs);
 
-    if (EL.btnRefresh) EL.btnRefresh.disabled = false;
-    if (EL.btnExportRekap) EL.btnExportRekap.disabled = false;
-    if (EL.btnExportDetail) EL.btnExportDetail.disabled = false;
-    if (EL.btnExportCurrentDetail) EL.btnExportCurrentDetail.disabled = false;
-  }
-
-  async function fetchCsv(url, retries = 2) {
-    let lastError;
-
-    for (let attempt = 0; attempt <= retries; attempt++) {
-      try {
-        const response = await fetch(url, { method: 'GET', cache: 'no-store' });
-
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status} saat mengambil ${url}`);
-        }
-
-        const text = await response.text();
-
-        if (!text || !text.trim()) {
-          throw new Error(`CSV kosong dari ${url}`);
-        }
-
-        if (/<!doctype html>|<html/i.test(text)) {
-          throw new Error(`Response bukan CSV, kemungkinan akses sheet masih tertutup: ${url}`);
-        }
-
-        return text;
-      } catch (error) {
-        lastError = error;
-        if (attempt < retries) {
-          await wait(500 + (attempt * 700));
-        }
+      function cleanup() {
+        window.clearTimeout(timeout);
+        delete window[callbackName];
+        if (script.parentNode) script.parentNode.removeChild(script);
       }
-    }
 
-    throw lastError;
+      window[callbackName] = (payload) => {
+        cleanup();
+        resolve(payload);
+      };
+
+      const finalUrl = new URL(url);
+      finalUrl.searchParams.set('callback', callbackName);
+      finalUrl.searchParams.set('_', Date.now());
+
+      script.src = finalUrl.toString();
+      script.async = true;
+      script.onerror = () => {
+        cleanup();
+        reject(new Error('Gagal memanggil backend SIRUP.'));
+      };
+
+      document.head.appendChild(script);
+    });
   }
 
-  function csvToObjects(csvText) {
-    const rows = parseCsv(csvText);
-    if (!rows.length) return [];
+  function normalizeObjectsHeaders(rows) {
+    if (!Array.isArray(rows)) return [];
 
-    const headers = rows[0].map(h => normalizeHeader(h));
-    const dataRows = rows.slice(1);
-
-    return dataRows
-      .filter(row => row.some(cell => String(cell || '').trim() !== ''))
-      .map(row => {
-        const obj = {};
-        headers.forEach((header, index) => {
-          obj[header] = row[index] != null ? String(row[index]).trim() : '';
-        });
-        return obj;
+    return rows.map(source => {
+      const obj = {};
+      Object.keys(source || {}).forEach(key => {
+        const normalized = normalizeHeader(key);
+        if (!normalized) return;
+        obj[normalized] = source[key] == null ? '' : String(source[key]).trim();
       });
+      return obj;
+    });
   }
 
   function parseCsv(text) {
@@ -1047,45 +1025,26 @@
       EL = getElements();
       resetUiState();
       showError('');
-      setLoading('Menghubungkan Data ...', true);
+      setLoading('Menghubungkan ke backend SIRUP...', true);
       await nextPaint();
 
-      const rawUrl = buildCsvUrl(SHEET_CONFIG.rawGid);
-      const scoreUrl = buildCsvUrl(SHEET_CONFIG.scoreGid);
+      if (!SIRUP_API_URL || SIRUP_API_URL.includes('ISI_URL_WEB_APP')) {
+        throw new Error('URL backend SIRUP belum diisi.');
+      }
 
-      setLoading('Mengambil Data ...', true);
-      await nextPaint();
-
-      const [rawResult, scoreResult] = await Promise.allSettled([
-        fetchCsv(rawUrl, 2),
-        fetchCsv(scoreUrl, 2)
-      ]);
+      const payload = await fetchSirupBackendData();
 
       if (APP_STATE.destroyed) return;
 
-      let rawRows = [];
-      let scoreRows = [];
-      const errors = [];
-
-      if (rawResult.status === 'fulfilled') {
-        rawRows = csvToObjects(rawResult.value);
-      } else {
-        errors.push('RAW_SIRUP gagal dimuat');
-        console.error('RAW_SIRUP error:', rawResult.reason);
-      }
-
-      if (scoreResult.status === 'fulfilled') {
-        scoreRows = csvToObjects(scoreResult.value);
-      } else {
-        errors.push('SCORE_ITKP_SIRUP gagal dimuat');
-        console.error('SCORE_ITKP_SIRUP error:', scoreResult.reason);
+      if (!payload || payload.ok === false) {
+        throw new Error(payload && payload.message ? payload.message : 'Backend tidak mengirim data valid.');
       }
 
       setLoading('Menyesuaikan header dan format data...', true);
       await nextPaint();
 
-      APP_STATE.rawSirup = normalizeRawSirup(rawRows);
-      APP_STATE.scoreSirup = normalizeScoreSirup(scoreRows);
+      APP_STATE.rawSirup = normalizeRawSirup(normalizeObjectsHeaders(payload.rawRows || []));
+      APP_STATE.scoreSirup = normalizeScoreSirup(normalizeObjectsHeaders(payload.scoreRows || []));
       APP_STATE.rekapPage = 1;
       APP_STATE.detailPage = 1;
 
@@ -1106,10 +1065,6 @@
       buildFilterOptions();
       renderSortIndicators();
       applyFilters();
-
-      if (errors.length) {
-        showError(errors.join(' + ') + '. Sebagian data berhasil dimuat, sebagian gagal.');
-      }
     } catch (error) {
       console.error('initMonitoringSirup error:', error);
       showError(`Data gagal dimuat. Detail: ${error.message}`);
