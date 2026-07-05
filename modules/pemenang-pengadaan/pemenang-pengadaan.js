@@ -1,6 +1,6 @@
 (function(){
 'use strict';
-const CFG={spreadsheetId:'1kqj1dEu3chs6GabXsIFmESS33JlzU_Yge7p_EPmYI3c',userSheet:{gid:'1599419870',title:'USERID'},providerSheet:{title:'PORTAL_PENYEDIA'},activeSheet:{title:'PORTAL_AKTIF'},ecatSheet:{title:'PORTAL_EKATALOG'},sessionKey:'pemenang_pengadaan_login_session_final_v10',allowed:[5,10],defaultPageSize:5};
+const CFG={apiUrl:'https://script.google.com/macros/s/AKfycbzAxTIjN9D11MotLxXzyARnBq3bVQnUKN7-giMKxhIb6NrZ77sl1oRAVIM7XV5UfI5C/exec',sessionKey:'pemenang_pengadaan_login_session_final_v10',allowed:[5,10],defaultPageSize:5};
 const st={session:null,activeTab:'dashboard',providerMode:'spse',activeMode:'search',pageSize:Number(localStorage.getItem('pp_page_size')||5)||5,providerRowsRaw:[],activeRowsRaw:[],ecatRowsRaw:[],providerResults:[],activeResults:[],ecatResults:[],providerPage:1,activePage:1,ecatPage:1,providerQuery:'',activeQuery:'',ecatQuery:'',providerYear:'',activeYear:'',activeJenis:'',activePhase:'',activeRange:'',ecatYear:'',sortProviderBy:'nama',sortActiveBy:'deadline',sortEcatBy:'nama',loadingData:false,dataLoaded:false};
 function esc(v){return String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;')}
 function nk(s){return String(s||'').toLowerCase().replace(/[^a-z0-9]/g,'')}
@@ -20,9 +20,57 @@ function loader(){let el=document.getElementById('ppLoadingOverlay');if(el)retur
 function showLoad(t,x){const el=loader(),card=el.querySelector('#ppLoadingCard');card.classList.remove('progress');el.querySelector('#ppLoadingTitle').textContent=t;el.querySelector('#ppLoadingText').textContent=x;el.classList.add('show')}
 function showProg(p,t,x){const el=loader(),card=el.querySelector('#ppLoadingCard');card.classList.add('progress');el.querySelector('#ppLoadingTitle').textContent=t;el.querySelector('#ppLoadingText').textContent=x;el.querySelector('#ppLoadingBar').style.width=`${Math.max(0,Math.min(100,p))}%`;el.querySelector('#ppLoadingPercent').textContent=`${Math.round(p)}%`;el.querySelector('#ppLoadingNote').textContent=p>=100?'Selesai':'Sedang diproses';el.classList.add('show')}
 function hideLoad(){loader().classList.remove('show')}
-async function fetchGid(cfg){const u=`https://docs.google.com/spreadsheets/d/${CFG.spreadsheetId}/gviz/tq?tqx=out:csv&gid=${cfg.gid}&v=${Date.now()}`;const r=await fetch(u,{cache:'no-store'});if(!r.ok)throw Error('Data belum bisa dibuka.');const t=await r.text();if(/DOCTYPE html|<html|googlevisualization/i.test(t.slice(0,300)))throw Error('Data belum bisa dibaca. Pastikan akses sudah dibuka.');return toRows(parseCsv(t))}
-async function fetchSheet(cfg){const u=`https://docs.google.com/spreadsheets/d/${CFG.spreadsheetId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(cfg.title)}&v=${Date.now()}`;const r=await fetch(u,{cache:'no-store'});if(!r.ok)throw Error(`Data ${cfg.title} belum bisa dibuka.`);const t=await r.text();if(/DOCTYPE html|<html|googlevisualization/i.test(t.slice(0,300)))throw Error(`Data ${cfg.title} belum bisa dibaca.`);return toRows(parseCsv(t))}
-async function ensureData(mode='simple',force=false){if((st.dataLoaded&&!force)||st.loadingData)return;st.loadingData=true;try{if(mode==='progress')showProg(18,'Menyiapkan portal','Sedang menyiapkan data utama.');else showLoad('Memuat halaman','Sedang menyiapkan data.');await delay(80);const p=fetchSheet(CFG.providerSheet);if(mode==='progress')showProg(45,'Membaca data penyedia','Sedang menyiapkan pencarian penyedia.');else showLoad('Memuat halaman','Sedang menyiapkan data penyedia.');await delay(60);const a=fetchSheet(CFG.activeSheet);if(mode==='progress')showProg(70,'Membaca paket aktif','Sedang menyiapkan paket berproses.');else showLoad('Memuat halaman','Sedang menyiapkan paket aktif.');const e=fetchSheet(CFG.ecatSheet);const res=await Promise.all([p,a,e]);st.providerRowsRaw=res[0];st.activeRowsRaw=res[1];st.ecatRowsRaw=res[2];st.dataLoaded=true;if(mode==='progress'){showProg(100,'Portal siap','Halaman berhasil disiapkan.');await delay(150)}else{showLoad('Halaman siap','Data berhasil dimuat.');await delay(80)}}finally{st.loadingData=false;hideLoad()}}
+function apiUrl(action,extra={}){
+  const u=new URL(CFG.apiUrl);
+  u.searchParams.set('module','pemenang');
+  u.searchParams.set('action',action);
+  Object.keys(extra||{}).forEach(k=>u.searchParams.set(k,extra[k]));
+  return u.toString();
+}
+function jsonp(url,timeoutMs=30000){
+  return new Promise((resolve,reject)=>{
+    const cb=`__ppBackendCallback_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const s=document.createElement('script');
+    const t=setTimeout(()=>{clean();reject(Error('Timeout mengambil data dari backend.'))},timeoutMs);
+    function clean(){clearTimeout(t);delete window[cb];if(s.parentNode)s.parentNode.removeChild(s)}
+    window[cb]=(payload)=>{clean();resolve(payload)};
+    const u=new URL(url);
+    u.searchParams.set('callback',cb);
+    u.searchParams.set('_',Date.now());
+    s.src=u.toString();
+    s.async=true;
+    s.onerror=()=>{clean();reject(Error('Gagal memanggil backend.'))};
+    document.head.appendChild(s);
+  });
+}
+function backendRows(rows){
+  return (rows||[]).map(src=>{
+    const r={},m={};
+    Object.keys(src||{}).forEach(k=>{
+      const key=String(k||'').trim();
+      const v=String(src[k]??'').trim();
+      r[key]=v;
+      m[nk(key)]=v;
+    });
+    r.__normalized=m;
+    return r;
+  }).filter(r=>Object.values(r.__normalized).some(v=>String(v).trim()!==''));
+}
+async function backendLogin(userId,password){
+  const payload=await jsonp(apiUrl('login',{userId,password}),30000);
+  if(!payload||payload.ok===false)throw Error(payload&&payload.message?payload.message:'Login gagal.');
+  return payload;
+}
+async function backendData(){
+  const payload=await jsonp(apiUrl('data'),30000);
+  if(!payload||payload.ok===false)throw Error(payload&&payload.message?payload.message:'Backend tidak mengirim data valid.');
+  return {
+    providerRows:backendRows(payload.providerRows||[]),
+    activeRows:backendRows(payload.activeRows||[]),
+    ecatRows:backendRows(payload.ecatRows||[])
+  };
+}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(cfg.title)}&v=${Date.now()}`;const r=await fetch(u,{cache:'no-store'});if(!r.ok)throw Error(`Data ${cfg.title} belum bisa dibuka.`);const t=await r.text();if(/DOCTYPE html|<html|googlevisualization/i.test(t.slice(0,300)))throw Error(`Data ${cfg.title} belum bisa dibaca.`);return toRows(parseCsv(t))}
+async function ensureData(mode='simple',force=false){if((st.dataLoaded&&!force)||st.loadingData)return;st.loadingData=true;try{if(mode==='progress')showProg(18,'Menyiapkan portal','Sedang menyiapkan data utama.');else showLoad('Memuat halaman','Sedang menyiapkan data.');await delay(80);if(!CFG.apiUrl||CFG.apiUrl.includes('ISI_URL_WEB_APP'))throw Error('URL backend Pemenang Pengadaan belum diisi.');if(mode==='progress')showProg(45,'Membaca data penyedia','Sedang mengambil data dari backend.');else showLoad('Memuat halaman','Sedang mengambil data dari backend.');await delay(60);const res=await backendData();if(mode==='progress')showProg(85,'Menyusun data portal','Sedang menyiapkan tampilan.');st.providerRowsRaw=res.providerRows;st.activeRowsRaw=res.activeRows;st.ecatRowsRaw=res.ecatRows;st.dataLoaded=true;if(mode==='progress'){showProg(100,'Portal siap','Halaman berhasil disiapkan.');await delay(150)}else{showLoad('Halaman siap','Data berhasil dimuat.');await delay(80)}}finally{st.loadingData=false;hideLoad()}}
 function daerah(inst,alamat){const tx=`${inst||''} ${alamat||''}`.toLowerCase();const ps=['jawa barat','jawa tengah','jawa timur','dki jakarta','banten','bali','sumatera','kalimantan','sulawesi','papua','ntb','ntt','aceh','riau','lampung','bengkulu','jambi','maluku','gorontalo'];for(const p of ps)if(tx.includes(p))return p.replace(/\b\w/g,c=>c.toUpperCase());return''}
 function klpdType(inst,lpse){const s=norm(lpse||inst||'').replace(/[._-]+/g,' ').replace(/\s+/g,' ').trim();if(!s)return'';if(s.startsWith('kota ')||/\bkota\b/.test(s)||/kota[a-z]/.test(s))return 'Kota';if(s.startsWith('kabupaten ')||s.startsWith('kab ')||/\bkab(\.|upaten)?\b/.test(s)||/kab[a-z]/.test(s))return 'Kabupaten';if(s.startsWith('provinsi ')||s.startsWith('prov ')||/\bprov(insi)?\b/.test(s)||/prov[a-z]/.test(s))return 'Provinsi';return 'Lainnya'}
 function ecatStatusTone(v){const s=norm(v);if(s.includes('completed')||s.includes('payment outside system'))return 'pp-badge--green';if(s.includes('on process'))return 'pp-badge--gold';return 'pp-badge--purple'}
@@ -35,7 +83,7 @@ function activeRows(){return st.activeRowsRaw.map(r=>map(r)).filter(r=>{const s=
 function ecatRows(){return st.ecatRowsRaw.map(r=>map(r,'EKATALOG')).filter(r=>{const j=norm(r.jenisPengadaan);return !j||j.includes('pekerjaan konstruksi')})}
 function loginHtml(){return`<div class="pp-login-wrap"><div class="pp-login-card"><div class="pp-login-brand"><span class="pp-kicker">Portal Data Pengadaan</span><h2>Pemenang Pengadaan</h2><p>Masuk untuk membuka pencarian paket penyedia, paket pengadaan aktif, dan pencarian paket e-katalog. Gunakan akun yang sudah disiapkan untuk masuk ke portal.</p></div><div class="pp-login-form-wrap"><h3>Masuk ke portal</h3><p class="pp-login-copy">Gunakan user id dan password yang sudah disiapkan.</p><form id="ppLoginForm"><label class="pp-field"><span>User ID</span><input class="pp-input" id="ppLoginUser" type="text" placeholder="Masukkan user id" required></label><label class="pp-field"><span>Password</span><input class="pp-input" id="ppLoginPassword" type="password" placeholder="Masukkan password" required></label><button class="pp-login-submit" id="ppLoginSubmit" type="submit">✦ Masuk ke Portal</button><div class="pp-login-error" id="ppLoginError"></div></form><div class="pp-login-note">Kalau belum bisa masuk, cek lagi user id dan password yang dipakai.</div></div></div></div>`}
 function setLoginError(root,msg=''){const el=root.querySelector('#ppLoginError');if(!el)return;el.textContent=msg;el.classList.toggle('show',!!msg)}
-async function doLogin(root,e){e.preventDefault();const u=root.querySelector('#ppLoginUser').value.trim(),p=root.querySelector('#ppLoginPassword').value,b=root.querySelector('#ppLoginSubmit');if(!u||!p){setLoginError(root,'User ID dan password wajib diisi.');return}b.disabled=true;b.textContent='Memeriksa akses...';try{showProg(18,'Memeriksa akses','Sedang memeriksa user id dan password.');const rows=await fetchGid(CFG.userSheet);showProg(55,'Validasi akun','Sedang memastikan akun sesuai.');const ok=rows.find(r=>String(gf(r,['USERID','user id','user'])).trim()===u&&String(gf(r,['PASSWORD','password','pass'])).trim()===p);if(!ok)throw Error('User ID atau password tidak sesuai.');saveSession({userId:u,loginAt:Date.now()});showProg(75,'Akses diterima','Sedang menyiapkan halaman utama.');await ensureData('progress');st.activeTab='dashboard';renderApp(root)}catch(err){hideLoad();setLoginError(root,err.message||'Login gagal.')}finally{b.disabled=false;b.textContent='✦ Masuk ke Portal'}}
+async function doLogin(root,e){e.preventDefault();const u=root.querySelector('#ppLoginUser').value.trim(),p=root.querySelector('#ppLoginPassword').value,b=root.querySelector('#ppLoginSubmit');if(!u||!p){setLoginError(root,'User ID dan password wajib diisi.');return}b.disabled=true;b.textContent='Memeriksa akses...';try{showProg(18,'Memeriksa akses','Sedang memeriksa user id dan password.');await backendLogin(u,p);saveSession({userId:u,loginAt:Date.now()});showProg(75,'Akses diterima','Sedang menyiapkan halaman utama.');await ensureData('progress');st.activeTab='dashboard';renderApp(root)}catch(err){hideLoad();setLoginError(root,err.message||'Login gagal.')}finally{b.disabled=false;b.textContent='✦ Masuk ke Portal'}}
 function counts(){const p=providerRows(),a=activeRows(),e=ecatRows(),u=[...p,...a,...e];return{p:p.length,a:a.length,e:e.length,i:new Set(u.map(r=>r.instansi).filter(Boolean)).size,lpse:new Set(u.map(r=>r.lpse).filter(Boolean)).size,pagu:a.reduce((t,r)=>t+(r.pagu||r.hps||0),0),kontrak:a.reduce((t,r)=>t+(r.kontrak||0),0)}}
 function dashboard(){const c=counts();return`<div class="pp-hero"><span class="pp-panel-title">Dashboard Akses · Pengguna</span><h3>Pilih panel kerja</h3><p>Silakan pilih menu yang ingin dibuka. Data dibuat ringan dengan pembatasan hasil per halaman.</p><div class="pp-hero-metrics"><div class="pp-hero-metric"><span>Paket penyedia</span><strong>${fnum(c.p)}</strong></div><div class="pp-hero-metric"><span>Paket aktif</span><strong>${fnum(c.a)}</strong></div><div class="pp-hero-metric"><span>E-Katalog</span><strong>${fnum(c.e)}</strong></div><div class="pp-hero-metric"><span>Instansi</span><strong>${fnum(c.i)}</strong></div></div></div><div class="pp-feature-grid"><button class="pp-feature-card pp-feature-card--blue" data-pp-tab="provider-search"><div class="pp-feature-icon">🔎</div><div class="pp-feature-copy"><span>Analisis penyedia</span><h4>Pencarian Paket Penyedia</h4><p>Telusuri profil penyedia, nilai kontrak, sebaran daerah, LPSE, dan daftar paket pemenang.</p></div><div class="pp-feature-arrow">→</div></button><button class="pp-feature-card pp-feature-card--teal" data-pp-tab="active-packages"><div class="pp-feature-icon">📦</div><div class="pp-feature-copy"><span>Monitoring aktif</span><h4>Paket Pengadaan Aktif</h4><p>Pantau paket berjalan, tahapan proses, pemenang, pagu, dan kontrak.</p></div><div class="pp-feature-arrow">→</div></button><button class="pp-feature-card pp-feature-card--purple" data-pp-tab="ecatalog-search"><div class="pp-feature-icon">🛒</div><div class="pp-feature-copy"><span>E-Katalog</span><h4>Pencarian Paket E-Katalog</h4><p>Fokus pada paket e-katalog konstruksi.</p></div><div class="pp-feature-arrow">→</div></button></div>${infoPanel()}`}
 function infoPanel(){return`<div class="pp-info-panel"><div class="pp-info-head"><div class="pp-info-badge">!</div><div><strong>Informasi Penting</strong><small>Keterangan singkat sebelum memakai menu</small></div></div><div class="pp-info-body"><div class="pp-info-grid"><div class="pp-info-box"><h5>Tentang dashboard ini</h5><ul><li>Portal ini membantu membaca data pengadaan secara ringkas.</li><li>Data ditampilkan apa adanya sesuai pembaruan terakhir.</li><li>Dipakai untuk riset awal, pemantauan, dan analisis tren.</li></ul></div><div class="pp-info-box"><h5>Mekanisme pembaruan data</h5><ul><li>Data ditarik berkala karena jumlah paket cukup banyak.</li><li>Bukan real-time, jadi ada jeda antara sumber dan dashboard.</li><li>Untuk kebutuhan penting, tetap cek tautan resmi.</li></ul></div><div class="pp-info-box pp-info-box--green"><h5>Penggunaan yang dianjurkan</h5><ul><li>Riset dan analisis tren pengadaan konstruksi.</li><li>Referensi awal profil penyedia.</li><li>Pemantauan paket aktif, nilai, tahapan, dan sebaran LPSE.</li></ul></div><div class="pp-info-box pp-info-box--red"><h5>Konfirmasi sumber resmi untuk</h5><ul><li>Keputusan hukum, administratif, atau komersial.</li><li>Verifikasi status pemenang atau kontrak aktif.</li><li>Laporan resmi, pengaduan, dan audit formal.</li></ul></div></div></div></div>`}
