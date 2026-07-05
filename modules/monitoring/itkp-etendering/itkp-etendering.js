@@ -1,11 +1,7 @@
 (function () {
   'use strict';
 
-  const ETENDERING_SHEET_CONFIG = {
-    spreadsheetId: '1tRYoFQ2obJLoQfIBmZQ_qIw72ZCMV9fKIpBA3DlsIxE',
-    rawGid: '1214214360',
-    scoreGid: '2003666725'
-  };
+  const ETENDERING_API_URL = 'https://script.google.com/macros/s/AKfycbwNDZMtKkhjoQnd7BtSJlUpKarffEltYZB6P3eph_rVeGBr1JJOnT59O9hbaRa1YvwTig/exec';
 
   const ETENDERING_MIN_LOADING_MS = 700;
   const ETENDERING_PAGE_SIZE = 20;
@@ -212,32 +208,22 @@
 
       try {
         showError('');
-        setLoading('Menghubungkan ke Google Sheet...', useOverlay);
+        setLoading('Menghubungkan ke backend eTendering...', useOverlay);
 
-        const [rawResult, scoreResult] = await Promise.allSettled([
-          fetchCsv(buildCsvUrl(ETENDERING_SHEET_CONFIG.rawGid)),
-          fetchCsv(buildCsvUrl(ETENDERING_SHEET_CONFIG.scoreGid))
-        ]);
+        if (!ETENDERING_API_URL || ETENDERING_API_URL.includes('ISI_URL_WEB_APP')) {
+          throw new Error('URL backend eTendering belum diisi.');
+        }
+
+        const payload = await fetchEtenderingBackendData();
 
         if (state.destroyed) return;
 
-        let rawRows = [];
-        let scoreRows = [];
-        const errors = [];
-
-        if (rawResult.status === 'fulfilled') {
-          rawRows = csvToObjects(rawResult.value);
-        } else {
-          errors.push('RAW_ETENDERING gagal dimuat');
-          console.error(rawResult.reason);
+        if (!payload || payload.ok === false) {
+          throw new Error(payload && payload.message ? payload.message : 'Backend tidak mengirim data valid.');
         }
 
-        if (scoreResult.status === 'fulfilled') {
-          scoreRows = csvToObjects(scoreResult.value);
-        } else {
-          errors.push('SCORE_ITKP_ETENDERING gagal dimuat');
-          console.error(scoreResult.reason);
-        }
+        const rawRows = normalizeObjectsHeaders(payload.rawRows || []);
+        const scoreRows = normalizeObjectsHeaders(payload.scoreRows || []);
 
         state.rawRows = normalizeRawRows(rawRows);
         state.scoreRows = normalizeScoreRows(scoreRows);
@@ -246,13 +232,9 @@
 
         buildFilterOptions();
         applyFilters();
-
-        if (errors.length) {
-          showError(errors.join(' + ') + '. Sebagian data berhasil dimuat, sebagian gagal.');
-        }
       } catch (error) {
         console.error(error);
-        showError(`Data eTendering gagal dimuat. Detail: ${error.message}. Pastikan sheet bisa diakses publik.`);
+        showError(`Data eTendering gagal dimuat. Detail: ${error.message}.`);
       } finally {
         const elapsed = Date.now() - startedAt;
 
@@ -580,50 +562,62 @@
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  function buildCsvUrl(gid) {
-    return `https://docs.google.com/spreadsheets/d/${ETENDERING_SHEET_CONFIG.spreadsheetId}/export?format=csv&gid=${gid}`;
+  function buildBackendUrl() {
+    const url = new URL(ETENDERING_API_URL);
+    url.searchParams.set('module', 'etendering');
+    url.searchParams.set('action', 'data');
+    return url.toString();
   }
 
-  async function fetchCsv(url) {
-    const response = await fetch(url, {
-      method: 'GET',
-      cache: 'no-store'
+  function fetchEtenderingBackendData() {
+    return jsonpRequest(buildBackendUrl(), 30000);
+  }
+
+  function jsonpRequest(url, timeoutMs = 30000) {
+    return new Promise((resolve, reject) => {
+      const callbackName = `__sippbjEtenderingCallback_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      const script = document.createElement('script');
+      const timeout = window.setTimeout(() => {
+        cleanup();
+        reject(new Error('Timeout mengambil data dari backend eTendering.'));
+      }, timeoutMs);
+
+      function cleanup() {
+        window.clearTimeout(timeout);
+        delete window[callbackName];
+        if (script.parentNode) script.parentNode.removeChild(script);
+      }
+
+      window[callbackName] = (payload) => {
+        cleanup();
+        resolve(payload);
+      };
+
+      const finalUrl = new URL(url);
+      finalUrl.searchParams.set('callback', callbackName);
+      finalUrl.searchParams.set('_', Date.now());
+
+      script.src = finalUrl.toString();
+      script.async = true;
+      script.onerror = () => {
+        cleanup();
+        reject(new Error('Gagal memanggil backend eTendering.'));
+      };
+
+      document.head.appendChild(script);
     });
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status} saat mengambil ${url}`);
-    }
-
-    const text = await response.text();
-
-    if (!text || !text.trim()) {
-      throw new Error(`CSV kosong dari ${url}`);
-    }
-
-    if (/<!doctype html>|<html/i.test(text)) {
-      throw new Error(`Response bukan CSV. Kemungkinan sheet masih belum public: ${url}`);
-    }
-
-    return text;
   }
 
-  function csvToObjects(csvText) {
-    const rows = parseCsv(csvText);
-    if (!rows.length) return [];
+  function normalizeObjectsHeaders(rows) {
+    if (!Array.isArray(rows)) return [];
 
-    const headers = rows[0].map(h => normalizeHeader(h));
-
-    return rows.slice(1)
-      .filter(row => row.some(cell => String(cell || '').trim() !== ''))
-      .map(row => {
-        const obj = {};
-
-        headers.forEach((header, index) => {
-          obj[header] = row[index] != null ? String(row[index]).trim() : '';
-        });
-
-        return obj;
+    return rows.map(source => {
+      const obj = {};
+      Object.keys(source || {}).forEach(key => {
+        obj[normalizeHeader(key)] = source[key] == null ? '' : String(source[key]).trim();
       });
+      return obj;
+    });
   }
 
   function parseCsv(text) {
